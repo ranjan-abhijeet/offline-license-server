@@ -1,0 +1,35 @@
+{
+	auto_https off
+}
+
+:80 {
+	# License admin UI + API: NOT gated, otherwise an expired license could never be replaced.
+	@license path /license /license/*
+	handle @license {
+		reverse_proxy license-service:3000
+	}
+
+	# Everything else: license is checked on EVERY request before routing.
+	handle {
+		forward_auth license-service:3000 {
+			uri /license/api/verify
+			# Pass license info from the verify response on to the services as request headers
+			copy_headers X-License-Status X-License-Expires X-License-Customer
+		}
+
+		# FastAPI: prefix stripped (app uses root_path="/orders")
+		handle_path /orders/* {
+			reverse_proxy orders-api:8000
+		}
+		# Next.js apps: prefix kept (they use basePath)
+		handle /inventory* {
+			reverse_proxy inventory:3000
+		}
+		handle /reports* {
+			reverse_proxy reports:3000
+		}
+		handle {
+			respond "Licensed app. Try /orders/items, /inventory, /reports  (admin: /license)" 200
+		}
+	}
+}

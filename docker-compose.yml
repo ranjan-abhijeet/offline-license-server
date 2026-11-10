@@ -1,0 +1,44 @@
+name: license-poc
+
+services:
+  caddy:
+    image: caddy:2.10
+    ports:
+      - "8080:80"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    networks: [edge, backend]
+    depends_on: [license-service, orders-api, inventory, reports]
+    restart: unless-stopped
+
+  license-service:
+    build: ./license-service
+    volumes:
+      - license-data:/data                          # imported license + clock state
+      - ./keys/public.pem:/keys/public.pem:ro       # vendor PUBLIC key only
+      - /etc/machine-id:/host/machine-id:ro         # host identity for fingerprinting
+    networks: [backend]
+    restart: unless-stopped
+
+  orders-api:
+    build: ./services/orders-api
+    networks: [backend]
+    restart: unless-stopped
+
+  inventory:
+    build: ./services/inventory
+    networks: [backend]
+    restart: unless-stopped
+
+  reports:
+    build: ./services/reports
+    networks: [backend]
+    restart: unless-stopped
+
+networks:
+  edge: {}            # Caddy's published port lives here
+  backend:
+    internal: true    # services are unreachable except through Caddy (no bypassing the license check)
+
+volumes:
+  license-data:
