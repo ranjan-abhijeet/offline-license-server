@@ -125,6 +125,9 @@ Then point the edge Caddy route at `my-svc:<LISTEN_PORT>`.
 Caveat (unchanged): the customer owns the host, so this raises the cost of bypassing rather than making it
 impossible. Its value is that there is no longer a single file or container whose removal disables licensing.
 
+> For a full step-by-step operator guide (export → load → fingerprint → license → verify images), see
+> **[SETUP.md](SETUP.md)**.
+
 ## Shipping images to colleagues / an air-gapped customer
 
 Images are built on YOUR machine and carried over as files (no registry needed). The easiest way is the
@@ -138,7 +141,7 @@ Send that `.tar.gz` plus `docker-compose.yml` and the `caddy/` folder. On the re
 
 ```bash
 docker load -i license-poc-YYYYMMDD.tar.gz
-docker compose up -d --no-build      # uses the loaded images, never rebuilds (no source needed)
+docker compose up -d                 # uses the loaded images by name (no build, no source needed)
 ```
 
 Equivalent manual steps if you'd rather not use the script:
@@ -153,7 +156,7 @@ docker save -o license-poc.tar \
 Notes:
 - Build on the receiver's CPU architecture (e.g. x86-64). The source code is NOT in the bundle.
 - The receiving host must be Linux (the fingerprint reads the host's `/etc/machine-id`).
-- `--no-build` makes Compose use only the loaded images, so colleagues don't need the Dockerfiles or source.
+- The services declare explicit `image:` names, so `up` uses the loaded images directly — colleagues need neither the Dockerfiles nor the source.
 
 ### Test the save/load round-trip on your own machine first
 
@@ -165,7 +168,7 @@ docker compose down
 docker image rm license-poc-license-service license-poc-orders-api \
                  license-poc-inventory license-poc-reports
 docker load -i license-poc-*.tar.gz
-docker compose up -d --no-build
+docker compose up -d
 curl localhost:8080/orders/items     # import a license first; see below
 ```
 

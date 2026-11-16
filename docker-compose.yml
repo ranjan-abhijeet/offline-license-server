@@ -12,6 +12,7 @@ services:
     restart: unless-stopped
 
   license-service:
+    image: license-poc-license-service              # explicit tag: `up` uses the loaded image, no --no-build needed
     build:
       context: .                                    # repo root, so keys/public.pem can be baked in
       dockerfile: license-service/Dockerfile
@@ -27,12 +28,14 @@ services:
   # so the ONLY way in is through its own license gate sharing the same network namespace.
 
   orders-api:
+    image: license-poc-orders-api
     build: ./services/orders-api
     command: ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000"]  # loopback only
     networks: [backend]
     restart: unless-stopped
 
   inventory:
+    image: license-poc-inventory
     build: ./services/inventory
     environment:
       HOSTNAME: 127.0.0.1          # Next standalone server binds loopback only
@@ -40,6 +43,7 @@ services:
     restart: unless-stopped
 
   reports:
+    image: license-poc-reports
     build: ./services/reports
     environment:
       HOSTNAME: 127.0.0.1
@@ -52,7 +56,11 @@ services:
   # reach. The gate verifies the license locally (baked public key), so it keeps enforcing
   # even if license-service is down. To protect a new service, copy one of these blocks.
 
+  # All three gates are the SAME image (license-poc-gate), differing only by env. Each has
+  # `build:` so `docker compose build` can produce it; Docker's layer cache makes the repeat
+  # builds instant. Only one `license-poc-gate` image needs to be shipped.
   orders-gate:
+    image: license-poc-gate
     build: { context: ., dockerfile: gate/Dockerfile }
     environment: { LISTEN_PORT: 8001, UPSTREAM_PORT: 8000 }
     volumes:
@@ -63,6 +71,7 @@ services:
     restart: unless-stopped
 
   inventory-gate:
+    image: license-poc-gate
     build: { context: ., dockerfile: gate/Dockerfile }
     environment: { LISTEN_PORT: 3001, UPSTREAM_PORT: 3000 }
     volumes:
@@ -73,6 +82,7 @@ services:
     restart: unless-stopped
 
   reports-gate:
+    image: license-poc-gate
     build: { context: ., dockerfile: gate/Dockerfile }
     environment: { LISTEN_PORT: 3001, UPSTREAM_PORT: 3000 }
     volumes:

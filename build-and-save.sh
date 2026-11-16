@@ -24,9 +24,7 @@ docker save \
   license-poc-orders-api \
   license-poc-inventory \
   license-poc-reports \
-  license-poc-orders-gate \
-  license-poc-inventory-gate \
-  license-poc-reports-gate \
+  license-poc-gate \
   caddy:2.10 \
   | gzip > "${OUT}.gz"
 
@@ -35,4 +33,4 @@ echo ">> Done: ${OUT}.gz"
 echo ">> Send that file plus docker-compose.yml and the caddy/ folder."
 echo ">> On the colleague's machine:"
 echo "     docker load -i ${OUT}.gz"
-echo "     docker compose up -d --no-build      # uses loaded images, never rebuilds"
+echo "     docker compose up -d                 # uses the loaded images by name (no build)"
