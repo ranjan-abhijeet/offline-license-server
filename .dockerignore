@@ -1,0 +1,8 @@
+# Root build context (used by license-service, which needs keys/public.pem).
+# Keep the context small and never ship the private key or any license files.
+**/node_modules
+**/.next
+**/.git
+.git
+keys/private.pem
+**/*.lic

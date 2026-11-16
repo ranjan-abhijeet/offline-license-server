@@ -9,27 +9,18 @@
 		reverse_proxy license-service:3000
 	}
 
-	# Everything else: license is checked on EVERY request before routing.
+	# Enforcement now lives in each service's license gate (sidecar), not here — so removing
+	# or editing this file cannot disable licensing. The edge only routes to the GATE ports.
+	handle_path /orders/* {
+		reverse_proxy orders-api:8001       # orders-gate (app itself is on 127.0.0.1:8000)
+	}
+	handle /inventory* {
+		reverse_proxy inventory:3001        # inventory-gate (app on 127.0.0.1:3000)
+	}
+	handle /reports* {
+		reverse_proxy reports:3001          # reports-gate
+	}
 	handle {
-		forward_auth license-service:3000 {
-			uri /license/api/verify
-			# Pass license info from the verify response on to the services as request headers
-			copy_headers X-License-Status X-License-Expires X-License-Customer
-		}
-
-		# FastAPI: prefix stripped (app uses root_path="/orders")
-		handle_path /orders/* {
-			reverse_proxy orders-api:8000
-		}
-		# Next.js apps: prefix kept (they use basePath)
-		handle /inventory* {
-			reverse_proxy inventory:3000
-		}
-		handle /reports* {
-			reverse_proxy reports:3000
-		}
-		handle {
-			respond "Licensed app. Try /orders/items, /inventory, /reports  (admin: /license)" 200
-		}
+		respond "Licensed app. Try /orders/items, /inventory, /reports  (admin: /license)" 200
 	}
 }

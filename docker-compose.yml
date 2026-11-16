@@ -12,27 +12,74 @@ services:
     restart: unless-stopped
 
   license-service:
-    build: ./license-service
+    build:
+      context: .                                    # repo root, so keys/public.pem can be baked in
+      dockerfile: license-service/Dockerfile
     volumes:
       - license-data:/data                          # imported license + clock state
-      - ./keys/public.pem:/keys/public.pem:ro       # vendor PUBLIC key only
       - /etc/machine-id:/host/machine-id:ro         # host identity for fingerprinting
+      # public.pem is baked into the image (not mounted) so it can't be swapped on disk
     networks: [backend]
     restart: unless-stopped
 
+  # ---- Application services ----
+  # Each app binds to 127.0.0.1 only (no code change — just the run command / HOSTNAME),
+  # so the ONLY way in is through its own license gate sharing the same network namespace.
+
   orders-api:
     build: ./services/orders-api
+    command: ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000"]  # loopback only
     networks: [backend]
     restart: unless-stopped
 
   inventory:
     build: ./services/inventory
+    environment:
+      HOSTNAME: 127.0.0.1          # Next standalone server binds loopback only
     networks: [backend]
     restart: unless-stopped
 
   reports:
     build: ./services/reports
+    environment:
+      HOSTNAME: 127.0.0.1
     networks: [backend]
+    restart: unless-stopped
+
+  # ---- License gates (sidecars) ----
+  # Same image in front of every service. network_mode: service:<app> shares the app's
+  # netns, so the gate reaches the app on 127.0.0.1 while being the only port the edge can
+  # reach. The gate verifies the license locally (baked public key), so it keeps enforcing
+  # even if license-service is down. To protect a new service, copy one of these blocks.
+
+  orders-gate:
+    build: { context: ., dockerfile: gate/Dockerfile }
+    environment: { LISTEN_PORT: 8001, UPSTREAM_PORT: 8000 }
+    volumes:
+      - license-data:/data:ro                       # read the license written by license-service
+      - /etc/machine-id:/host/machine-id:ro
+    network_mode: "service:orders-api"
+    depends_on: [orders-api]
+    restart: unless-stopped
+
+  inventory-gate:
+    build: { context: ., dockerfile: gate/Dockerfile }
+    environment: { LISTEN_PORT: 3001, UPSTREAM_PORT: 3000 }
+    volumes:
+      - license-data:/data:ro
+      - /etc/machine-id:/host/machine-id:ro
+    network_mode: "service:inventory"
+    depends_on: [inventory]
+    restart: unless-stopped
+
+  reports-gate:
+    build: { context: ., dockerfile: gate/Dockerfile }
+    environment: { LISTEN_PORT: 3001, UPSTREAM_PORT: 3000 }
+    volumes:
+      - license-data:/data:ro
+      - /etc/machine-id:/host/machine-id:ro
+    network_mode: "service:reports"
+    depends_on: [reports]
     restart: unless-stopped
 
 networks:
