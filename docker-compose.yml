@@ -24,29 +24,25 @@ services:
     restart: unless-stopped
 
   # ---- Application services ----
-  # Each app binds to 127.0.0.1 only (no code change — just the run command / HOSTNAME),
-  # so the ONLY way in is through its own license gate sharing the same network namespace.
+  # Each app binds to 127.0.0.1 ONLY — this is baked into each service's Dockerfile (CMD/ENV),
+  # not set here, so editing this compose file cannot re-expose an app. The only ingress is the
+  # app's license gate, which shares its network namespace (below).
 
   orders-api:
     image: license-poc-orders-api
     build: ./services/orders-api
-    command: ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000"]  # loopback only
     networks: [backend]
     restart: unless-stopped
 
   inventory:
     image: license-poc-inventory
     build: ./services/inventory
-    environment:
-      HOSTNAME: 127.0.0.1          # Next standalone server binds loopback only
     networks: [backend]
     restart: unless-stopped
 
   reports:
     image: license-poc-reports
     build: ./services/reports
-    environment:
-      HOSTNAME: 127.0.0.1
     networks: [backend]
     restart: unless-stopped
 

@@ -69,7 +69,10 @@ cannot disable licensing, and each gate keeps working even if `license-service` 
 
 `license.lic` is JSON: `{ "payload": base64(claimsJSON), "signature": base64(Ed25519(payload)) }`.
 Claims: `licenseId, product, customer, fingerprint, features[], issuedAt, expiresAt, graceDays`.
-The payload is **not** encrypted (anyone can read it); integrity comes from the signature.
+`expiresAt` is an absolute ISO timestamp and `graceDays` is a number that MAY be fractional (the CLI's
+`--minutes` / `--grace-minutes` testing flags produce short/fractional values). The verifiers compute from the
+absolute timestamp, so minute-level expiry needs no reader change. The payload is **not** encrypted (anyone can
+read it); integrity comes from the signature.
 
 Status codes (keep these stable — they are a contract): `VALID`, `GRACE`, `EXPIRED`, `NO_LICENSE`,
 `MACHINE_MISMATCH`, `CLOCK_TAMPERED`.
@@ -84,8 +87,12 @@ Status codes (keep these stable — they are a contract): `VALID`, `GRACE`, `EXP
    `license-service/lib/fingerprint.js`, and `gate/verify.js`. It is
    `sha256("amh-license-v1:" + machineId).hex[:32].toUpperCase()` grouped into 4-char blocks. If you change it,
    change all three or every license breaks.
-4. **Apps bind 127.0.0.1 only.** The gate is the sole ingress. Do not add `ports:` to an app service or make it
-   listen on `0.0.0.0` — that bypasses the gate.
+4. **Apps bind 127.0.0.1 only, baked into the image.** Each service's Dockerfile forces the loopback bind
+   (`orders-api`: `uvicorn --host 127.0.0.1` in CMD; Next apps: `CMD ["sh","-c","HOSTNAME=127.0.0.1 exec node server.js"]`
+   — the inline assignment beats any compose `environment:` override). This is deliberately NOT set in
+   docker-compose.yml, so editing the shipped compose file cannot re-expose an app. Do not move the bind back
+   into compose, add `ports:` to an app service, or make an app listen on `0.0.0.0`. (`license-service` is the
+   exception — it is not gated and must keep `HOSTNAME=0.0.0.0`.)
 5. **Signature is checked before expiry/machine.** Order matters for correct error codes.
 6. **`backend` network is `internal: true`.** Don't expose service ports to the host; only the edge Caddy
    publishes a port (`8080`).
@@ -122,10 +129,10 @@ license's signature against `keys/public.pem` without the server.
 
 ## Common tasks
 
-**Protect a new service** (no app code change): in `docker-compose.yml` make the app bind loopback
-(`--host 127.0.0.1` or `HOSTNAME=127.0.0.1`), add a gate block copied from an existing one with the right
-`UPSTREAM_PORT`/`LISTEN_PORT` and `network_mode: "service:<app>"`, then add a Caddy route to `<app>:<LISTEN_PORT>`.
-See README "Protecting a new service".
+**Protect a new service** (no app code change): bake the loopback bind into the service's Dockerfile (CMD/ENV,
+not compose — see invariant #4), add a gate block to `docker-compose.yml` copied from an existing one with the
+right `UPSTREAM_PORT`/`LISTEN_PORT` and `network_mode: "service:<app>"`, then add a Caddy route to
+`<app>:<LISTEN_PORT>`. See README "Protecting a new service".
 
 **Change what the gate enforces** (e.g., add a feature-flag check): edit `gate/verify.js` only, rebuild the gate
 images. Do not duplicate license logic into the individual services — that's the whole point of the sidecar.

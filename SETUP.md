@@ -139,6 +139,14 @@ done
 docker run --rm --entrypoint sh license-poc-gate -c "ls -l /app"   # server.js, verify.js, public.pem
 ```
 
+**The apps are loopback-only (baked in) — you can't reach them past the gate:**
+```bash
+docker compose exec caddy wget -qO- http://orders-api:8001/items   # the gate answers (403 or 200)
+docker compose exec caddy wget -qO- http://orders-api:8000/items   # refused: app binds 127.0.0.1 only
+```
+The `127.0.0.1` bind is in each service's Dockerfile, not in `docker-compose.yml`, so editing the compose file
+cannot re-expose an app.
+
 **Inspect build steps / confirm a mounted key wasn't reintroduced:**
 ```bash
 docker history --no-trunc license-poc-license-service | grep -i public.pem   # shows the COPY of public.pem

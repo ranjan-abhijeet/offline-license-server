@@ -3,8 +3,9 @@
 //
 //   node tools/license-cli.mjs keygen
 //   node tools/license-cli.mjs fingerprint [--machine-id-file /etc/machine-id]
-//   node tools/license-cli.mjs issue --customer "ACME" --fingerprint XXXX-... [--days 365 | --expires 2027-12-31]
-//                                    [--grace 15] [--features a,b] [--product AMH] [--out acme.lic]
+//   node tools/license-cli.mjs issue --customer "ACME" --fingerprint XXXX-... [--days 365 | --minutes 5 | --expires 2027-12-31]
+//                                    [--grace 15 | --grace-minutes 2] [--features a,b] [--product AMH] [--out acme.lic]
+//     --minutes / --grace-minutes are for fast expiry testing, e.g.  --minutes 5 --grace 0
 //   node tools/license-cli.mjs inspect acme.lic
 //
 // Keys: keys/private.pem stays with the VENDOR (never ship it). keys/public.pem is mounted into license-service.
@@ -52,11 +53,24 @@ switch (cmd) {
 
   case 'issue': {
     if (!args.customer || !args.fingerprint) die('issue requires --customer and --fingerprint');
+    const num = (v, name) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) die(`--${name} must be a number`);
+      return n;
+    };
+
+    // Expiry precedence: --expires (absolute date) > --minutes (testing) > --days (default 365).
     const now = new Date();
-    const expiresAt = args.expires
-      ? new Date(args.expires)
-      : new Date(now.getTime() + Number(args.days ?? 365) * 86400000);
+    let expiresAt;
+    if (args.expires) expiresAt = new Date(args.expires);
+    else if (args.minutes != null) expiresAt = new Date(now.getTime() + num(args.minutes, 'minutes') * 60000);
+    else expiresAt = new Date(now.getTime() + num(args.days ?? 365, 'days') * 86400000);
     if (Number.isNaN(expiresAt.getTime())) die('invalid --expires date');
+
+    // Grace: --grace-minutes (testing) wins over --grace (days). Stored as graceDays (may be fractional).
+    const graceDays = args['grace-minutes'] != null
+      ? num(args['grace-minutes'], 'grace-minutes') / 1440
+      : num(args.grace ?? 15, 'grace');
 
     const claims = {
       licenseId: crypto.randomUUID(),
@@ -66,7 +80,7 @@ switch (cmd) {
       features: args.features ? String(args.features).split(',') : [],
       issuedAt: now.toISOString(),
       expiresAt: expiresAt.toISOString(),
-      graceDays: Number(args.grace ?? 15),
+      graceDays,
     };
     const payload = Buffer.from(JSON.stringify(claims)).toString('base64');
     const signature = crypto.sign(null, Buffer.from(payload), crypto.createPrivateKey(fs.readFileSync(PRIV))).toString('base64');

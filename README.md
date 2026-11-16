@@ -93,8 +93,11 @@ How it holds together:
 
 - **One gate image** (`gate/Dockerfile`) is placed in front of every service via
   `network_mode: "service:<app>"`, which shares the app's network namespace.
-- **The app binds `127.0.0.1` only** — set by the run command (`--host 127.0.0.1`) or `HOSTNAME=127.0.0.1`,
-  **no application code change**. Nothing on the service network can reach the app except its gate.
+- **The app binds `127.0.0.1` only, baked into its image.** The loopback bind lives in each service's
+  **Dockerfile** (`uvicorn --host 127.0.0.1` for FastAPI; `CMD ["sh","-c","HOSTNAME=127.0.0.1 exec node server.js"]`
+  for the Next apps, where the inline value beats any env override). It is **not** in `docker-compose.yml`, so
+  editing the shipped compose file can't re-expose an app — a client would have to rebuild the image (whose
+  source is hidden/compiled). Nothing on the service network can reach the app except its gate.
 - **The gate verifies the license locally** using the baked-in public key and the shared `license-data`
   volume, so it keeps enforcing **even if `license-service` is down**. It re-reads only when the license
   file changes, so the hot path is just date math.
@@ -102,15 +105,19 @@ How it holds together:
 
 ### Protecting a new service
 
-No code changes to the service. In `docker-compose.yml`: make the app bind loopback, then copy a gate block.
+Two steps. **(1)** Bake the loopback bind into the service's own Dockerfile (so the shipped compose file can't
+undo it): make the app listen on `127.0.0.1:PORT` in its `CMD`/`ENV` — e.g. `--host 127.0.0.1` for a Python
+server, or `CMD ["sh","-c","HOSTNAME=127.0.0.1 exec node server.js"]` for a Next app. **(2)** In
+`docker-compose.yml`, add a gate block beside the app (no app code change):
 
 ```yaml
   my-svc:
-    build: ./services/my-svc
-    command: ["<run the app on 127.0.0.1:PORT>"]   # or environment: { HOSTNAME: 127.0.0.1 }
+    image: license-poc-my-svc
+    build: ./services/my-svc          # its Dockerfile binds the app to 127.0.0.1 (step 1)
     networks: [backend]
 
   my-svc-gate:
+    image: license-poc-gate
     build: { context: ., dockerfile: gate/Dockerfile }
     environment: { LISTEN_PORT: <edge-facing port>, UPSTREAM_PORT: <app PORT> }
     volumes:
