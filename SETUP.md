@@ -115,10 +115,10 @@ curl -s localhost:8080/license/api/status
 Use these to confirm the images don't carry source or the private key. `--entrypoint sh` inspects an image
 without running the app; the Node images are Alpine and the Python image is slim, both have `sh`.
 
-**orders-api (Python) — only compiled bytecode, no `.py`:**
+**orders-api (Python) — compiled to native `.so`, no `.py`/`.pyc`:**
 ```bash
-docker run --rm --entrypoint sh license-poc-orders-api -c "ls -l /app; echo '--- any .py?'; find / -name '*.py' -path '*/app/*' 2>/dev/null"
-# expect: main.pyc present, no main.py
+docker run --rm --entrypoint sh license-poc-orders-api -c "ls -l /app; echo '--- any .py/.pyc?'; find /app -name '*.py' -o -name '*.pyc' 2>/dev/null"
+# expect: main*.so and license_guard*.so present, no .py or .pyc
 ```
 
 **license-service (Next.js) — bundled output + baked public key, no source/maps:**
@@ -134,9 +134,9 @@ for img in license-poc-license-service license-poc-gate; do
 done
 ```
 
-**The gate carries the public key and its two small JS files:**
+**The gate ships one minified bundle + the public key (no readable source):**
 ```bash
-docker run --rm --entrypoint sh license-poc-gate -c "ls -l /app"   # server.js, verify.js, public.pem
+docker run --rm --entrypoint sh license-poc-gate -c "ls -l /app"   # gate.cjs (minified), public.pem
 ```
 
 **The apps are loopback-only (baked in) — you can't reach them past the gate:**
@@ -146,6 +146,15 @@ docker compose exec caddy wget -qO- http://orders-api:8000/items   # refused: ap
 ```
 The `127.0.0.1` bind is in each service's Dockerfile, not in `docker-compose.yml`, so editing the compose file
 cannot re-expose an app.
+
+**In-process enforcement (orders-api + inventory):** these two also check the license *inside the app*, so even
+if the gate is bypassed they refuse to serve. You can see it by running the app directly, exposed, without a gate:
+```bash
+docker run --rm -p 8099:8000 -v license-poc_license-data:/data:ro -v /etc/machine-id:/host/machine-id:ro \
+  license-poc-orders-api uvicorn main:app --host 0.0.0.0 --port 8000
+curl -i localhost:8099/items    # still 403 unless a valid license is in the volume — the app enforces itself
+```
+`reports` is intentionally gate-only (no in-process check) to illustrate coverage tracking across services.
 
 **Inspect build steps / confirm a mounted key wasn't reintroduced:**
 ```bash

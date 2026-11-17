@@ -67,6 +67,24 @@ open http://localhost:8080/reports
 Status codes: `VALID`, `GRACE` (expired but inside grace days – still allowed), `EXPIRED`, `NO_LICENSE`,
 `MACHINE_MISMATCH`, `CLOCK_TAMPERED`. Services receive `X-License-Status/Expires/Customer` request headers.
 
+### Testing expiry quickly (minutes)
+
+For testing you don't have to wait days. `issue` accepts `--minutes` for expiry and `--grace-minutes` for the
+grace window (both override `--days` / `--grace`):
+
+```bash
+# expires in 5 minutes, no grace -> VALID now, EXPIRED after 5 min
+node tools/license-cli.mjs issue --customer TEST --fingerprint "$FP" --minutes 5 --grace 0 --out test.lic
+curl -F file=@test.lic localhost:8080/license/api/import
+curl localhost:8080/orders/items     # 200 now; 403 (EXPIRED) after 5 min — no re-import needed, it's time-based
+
+# test the grace window too: expires in 1 min, then 2 min of grace
+node tools/license-cli.mjs issue --customer TEST --fingerprint "$FP" --minutes 1 --grace-minutes 2 --out test.lic
+```
+
+Expiry is an absolute timestamp in the license, so the gate flips automatically at the deadline — nothing to
+restart. (`--grace-minutes` is stored as a fractional `graceDays`; the verifiers already handle that.)
+
 ## How it works
 
 - **License file** = `{ payload: base64(JSON claims), signature: Ed25519(payload) }`. Only the vendor's private key
@@ -131,6 +149,45 @@ Then point the edge Caddy route at `my-svc:<LISTEN_PORT>`.
 
 Caveat (unchanged): the customer owns the host, so this raises the cost of bypassing rather than making it
 impossible. Its value is that there is no longer a single file or container whose removal disables licensing.
+
+## Defense in depth, layer 2: in-process enforcement (license client)
+
+The gate stops network-level bypass, but someone who controls Docker can run an app container directly and
+skip its gate. To close that, a service can **also check the license inside its own process**, so it refuses
+to serve no matter how it's launched. Reusable reference clients live in `clients/`:
+
+- **`clients/python/license_guard.py`** — a Starlette/FastAPI middleware. Integrate in one line:
+  `app.add_middleware(LicenseMiddleware)`.
+- **`clients/node/license-guard.mjs`** — a Next.js (Node-runtime) route wrapper:
+  `export const GET = withLicense(handler)`.
+
+Both use the **same algorithm, signed license, and public key as the gate** — they verify locally and fail
+closed (403) when the license is missing/invalid/expired. In this repo, **`orders-api` and `inventory` run both
+layers** (gate + in-process); **`reports` is intentionally gate-only**, to illustrate the coverage point below.
+
+Each in-process service bakes the public key into its image and mounts the license + machine-id read-only
+(see `docker-compose.yml`). Because the check is in the app, running the container directly no longer bypasses it.
+
+**Rolling this out across many existing codebases:** ship one small client **per language** (not per service),
+integrate it as the framework's native middleware (one line), distribute it via your internal package registry
+so rule changes are a version bump (not a rewrite), and keep coverage honest with a template default + a CI check
++ a startup self-report. `reports` being gate-only here is exactly what such a self-report would flag as "not yet
+adopted."
+
+## Making the images hard to read
+
+Enforcement is only as good as the code behind it, so the shipped images avoid readable source:
+
+| Image | What ships | Technique |
+|---|---|---|
+| `orders-api` | native `.so` modules (app + license guard) | **Nuitka** compiles Python to machine code — no `.py`/`.pyc`; function bodies are compiled C |
+| `gate` | one minified `gate.cjs` | esbuild bundle + minify (no readable `server.js`/`verify.js`) |
+| `license-service`, `inventory`, `reports` | minified Next `standalone` bundle | webpack bundle + minify, no source, no source maps |
+
+Honest limits: string literals (e.g. `"amh-license-v1"`) survive in any binary, and minified JS / compiled `.so`
+can still be reverse-engineered by a determined attacker. The strong guarantee is **not** code hiding — it's that
+**no secret lives in the images** (only the public key), so even full decompilation can't forge a license without
+the vendor private key. For a higher bar, obfuscate the JS bundles and sign the images.
 
 > For a full step-by-step operator guide (export → load → fingerprint → license → verify images), see
 > **[SETUP.md](SETUP.md)**.

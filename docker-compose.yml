@@ -28,15 +28,28 @@ services:
   # not set here, so editing this compose file cannot re-expose an app. The only ingress is the
   # app's license gate, which shares its network namespace (below).
 
+  # orders-api + inventory ALSO enforce the license in-process (clients/, baked into the image),
+  # so they refuse to serve even if the sidecar gate is bypassed. They mount the license + machine-id
+  # read-only to verify locally. (reports is intentionally left gate-only — see README / self-report.)
   orders-api:
     image: license-poc-orders-api
-    build: ./services/orders-api
+    build:
+      context: .                              # repo root: bakes clients/python + keys/public.pem
+      dockerfile: services/orders-api/Dockerfile
+    volumes:
+      - license-data:/data:ro                 # the in-process guard reads the imported license
+      - /etc/machine-id:/host/machine-id:ro
     networks: [backend]
     restart: unless-stopped
 
   inventory:
     image: license-poc-inventory
-    build: ./services/inventory
+    build:
+      context: .                              # repo root: bakes clients/node + keys/public.pem
+      dockerfile: services/inventory/Dockerfile
+    volumes:
+      - license-data:/data:ro
+      - /etc/machine-id:/host/machine-id:ro
     networks: [backend]
     restart: unless-stopped
 

@@ -18,7 +18,9 @@ libraries without being asked.
 - **Sample services**: `orders-api` (Python 3.12 / FastAPI), `inventory` + `reports` (Next.js 15).
 - **Edge routing**: Caddy 2 (`caddy/Caddyfile`).
 - **Orchestration**: Docker Compose (`docker-compose.yml`), one host, two networks.
-- **Crypto**: Ed25519 (Node `node:crypto`). No external crypto libs.
+- **Crypto**: Ed25519. Node side uses `node:crypto`; the Python in-process client uses `cryptography`.
+- **In-process clients** (`clients/`): Python (`cryptography` + Starlette middleware) and Node (`node:crypto`).
+- **Code hardening**: `orders-api` compiled to native `.so` (Nuitka); `gate` bundled+minified (esbuild); Next apps minified.
 
 ## Repository map
 
@@ -43,10 +45,15 @@ license-service/           Next.js app: license admin UI + API. basePath "/licen
 gate/                      The sidecar. ONE image used in front of every service.
   verify.js                Local, read-only license verification (baked public key). Same algorithm as license-service.
   server.js                ~40-line reverse proxy: check license -> 403, or proxy to the app on 127.0.0.1.
+                           (Shipped bundled+minified as gate.cjs — see gate/Dockerfile.)
 
-services/orders-api/       FastAPI sample. Ships as sourceless main.pyc (see Dockerfile).
-services/inventory/        Next.js sample. basePath "/inventory".
-services/reports/          Next.js sample. basePath "/reports".
+clients/                   Reusable IN-PROCESS license clients (layer-2 enforcement). Same algorithm as the gate.
+  python/license_guard.py  FastAPI/Starlette middleware: app.add_middleware(LicenseMiddleware).
+  node/license-guard.mjs   Next.js route wrapper: export const GET = withLicense(handler).
+
+services/orders-api/       FastAPI sample. Uses license_guard in-process; ships as native .so (Nuitka), no .py/.pyc.
+services/inventory/        Next.js sample. Uses license-guard in-process (route wrapper). basePath "/inventory".
+services/reports/          Next.js sample. basePath "/reports". GATE-ONLY (no in-process guard) — the coverage example.
 ```
 
 ## Architecture & data flow
@@ -65,6 +72,16 @@ Why the gate pattern: each app binds `127.0.0.1` only and the gate shares its ne
 (`network_mode: "service:<app>"`), so the gate is the ONLY way in. Removing/editing the edge Caddyfile
 cannot disable licensing, and each gate keeps working even if `license-service` is down.
 
+**Two enforcement layers:** (1) the sidecar **gate** (network-level, every service); (2) the in-process
+**`clients/`** guard baked into `orders-api` + `inventory` (process-level — survives running the container
+directly; `reports` is gate-only). Both use the identical verify algorithm.
+
+**License distribution:** there is no per-service copy. `import` writes one `license.lic` into the
+**`license-data`** named volume (license-service has it read-write; it is the only writer). Every gate and every
+in-process app mounts that same volume **read-only** plus `/etc/machine-id`, and re-reads the file when its mtime
+changes — so one import applies everywhere, live, no restart. An in-process service without the `license-data`
+mount will 403 (it sees "no license").
+
 ## License file format
 
 `license.lic` is JSON: `{ "payload": base64(claimsJSON), "signature": base64(Ed25519(payload)) }`.
@@ -81,12 +98,13 @@ Status codes (keep these stable — they are a contract): `VALID`, `GRACE`, `EXP
 
 1. **The private key never ships.** `keys/private.pem` stays with the vendor and is git-ignored. It must never
    be COPYed into any image, referenced by any service, or committed. Only `tools/license-cli.mjs` uses it.
-2. **The public key is baked into images, never mounted.** `license-service/Dockerfile` and `gate/Dockerfile`
-   `COPY keys/public.pem`. Do not reintroduce a `./keys/public.pem` volume mount (a mounted key is swappable).
-3. **The fingerprint algorithm must stay identical in all three places:** `tools/license-cli.mjs`,
-   `license-service/lib/fingerprint.js`, and `gate/verify.js`. It is
-   `sha256("amh-license-v1:" + machineId).hex[:32].toUpperCase()` grouped into 4-char blocks. If you change it,
-   change all three or every license breaks.
+2. **The public key is baked into images, never mounted.** `license-service`, `gate`, `orders-api`, and
+   `inventory` Dockerfiles `COPY keys/public.pem`. Do not reintroduce a `./keys/public.pem` volume mount
+   (a mounted key is swappable).
+3. **The fingerprint algorithm must stay identical in ALL FIVE places:** `tools/license-cli.mjs`,
+   `license-service/lib/fingerprint.js`, `gate/verify.js`, `clients/python/license_guard.py`, and
+   `clients/node/license-guard.mjs`. It is `sha256("amh-license-v1:" + machineId).hex[:32].toUpperCase()` grouped
+   into 4-char blocks. Change one → change all, or licenses mismatch somewhere.
 4. **Apps bind 127.0.0.1 only, baked into the image.** Each service's Dockerfile forces the loopback bind
    (`orders-api`: `uvicorn --host 127.0.0.1` in CMD; Next apps: `CMD ["sh","-c","HOSTNAME=127.0.0.1 exec node server.js"]`
    — the inline assignment beats any compose `environment:` override). This is deliberately NOT set in
@@ -137,8 +155,14 @@ right `UPSTREAM_PORT`/`LISTEN_PORT` and `network_mode: "service:<app>"`, then ad
 **Change what the gate enforces** (e.g., add a feature-flag check): edit `gate/verify.js` only, rebuild the gate
 images. Do not duplicate license logic into the individual services — that's the whole point of the sidecar.
 
-**Change license fields / claims**: update `tools/license-cli.mjs` (issuer) AND the readers
-(`license-service/lib/license.js`, `gate/verify.js`). Keep the three in sync.
+**Change license fields / claims**: update `tools/license-cli.mjs` (issuer) AND every reader —
+`license-service/lib/license.js`, `gate/verify.js`, `clients/python/license_guard.py`,
+`clients/node/license-guard.mjs`. Keep them in sync.
+
+**Add in-process enforcement to a service**: integrate the matching `clients/` library as framework middleware
+(one line: `app.add_middleware(LicenseMiddleware)` / `export const GET = withLicense(handler)`), bake the public
+key into its image, and mount `license-data:/data:ro` + `/etc/machine-id` in compose. This is layer 2 — keep the
+gate too. `reports` is deliberately left without it as the coverage-governance example.
 
 **Rotate keys**: `rm keys/*.pem && node tools/license-cli.mjs keygen` → `docker compose build` (rebuilds so the
 new public key is baked in) → re-issue every license. Rotating invalidates all existing licenses. **Golden rule:
@@ -149,10 +173,14 @@ after any keygen, rebuild before importing**, or imports fail with `INVALID_SIGN
 - Keep code dependency-free where it already is (`gate/`, `tools/`, `lib/`). Prefer `node:*` built-ins.
 - Next.js services use `output: "standalone"`; the final image ships only the bundled server (no source, no maps).
   Keep multi-stage builds — don't COPY source into the final stage.
-- `orders-api` ships compiled `main.pyc` only; the Dockerfile compiles it in a build stage. Don't add the `.py`
-  to the final image, and don't commit `__pycache__/`.
-- Build context for `license-service` and `gate` is the **repo root** (they need `keys/public.pem`); their COPY
-  paths are prefixed accordingly. The root `.dockerignore` keeps the context small and excludes the private key.
+- **Code hardening (keep it):** `orders-api` ships native `.so` modules compiled by **Nuitka** (app + license
+  guard) — no `.py`/`.pyc` in the final image; needs `cryptography` at runtime (in requirements.txt). The `gate`
+  ships one bundled+minified `gate.cjs` (esbuild). Next apps ship minified `standalone` bundles. Don't add raw
+  source to a final image, and don't commit `__pycache__/` or Nuitka `*.build/` dirs. String literals still
+  survive compilation — that's expected; the guarantee is "no secret in the image," not "unreadable."
+- Build context for `license-service`, `gate`, `orders-api`, and `inventory` is the **repo root** (they need
+  `keys/public.pem`, and the service builds vendor `clients/` in). Their COPY paths are prefixed accordingly.
+  The root `.dockerignore` keeps the context small and excludes the private key.
 - Every service declares an explicit `image:` tag (`license-poc-*`) alongside `build:`, so a loaded image is used
   by name on `docker compose up` without `--no-build`. All three gates share one image, `license-poc-gate`
   (identical; they differ only by env). `build-and-save.sh` ships 6 images: the 4 services, `license-poc-gate`,
